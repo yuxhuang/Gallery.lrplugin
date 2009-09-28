@@ -29,6 +29,172 @@ GalleryUploadExportDialogSections = {}
 
 -------------------------------------------------------------------------------
 
+local deepcopy = function (object)
+    local lookup_table = {}
+    local function _copy(object)
+        if type(object) ~= "table" then
+            return object
+        elseif lookup_table[object] then
+            return lookup_table[object]
+        end
+        local new_table = {}
+        lookup_table[object] = new_table
+        for index, value in pairs(object) do
+            new_table[_copy(index)] = _copy(value)
+        end
+        return setmetatable(new_table, getmetatable(object))
+    end
+    return _copy(object)
+end
+
+local buildServerItems = function( properties ) 
+	log:trace ("Calling buildServerItems( properties )")
+	local serverItems = {}
+	
+	if prefs == nil then
+		log:info("No preferences")
+	else
+		if prefs.serverTable ~= nil and #prefs.serverTable > 0 then
+			for i,v in ipairs( prefs.serverTable ) do 
+				table.insert( serverItems,
+					{ title = v.label, value = i }
+				)
+			end
+			properties.serverItems = serverItems
+			-- select the last used server
+			if prefs.serverValue ~= nil and #serverItems >= prefs.serverValue then
+				properties.serverValue = prefs.serverValue
+			end
+		else
+			properties.serverItems = serverItems
+			-- select no server
+			properties.serverValue = 0
+		end
+	end
+end
+
+local buildRootAlbumItems = function( properties, albumList )
+	log:trace("Calling buildRootAlbumItems( properties, albumList )")
+	-- reset the album items
+	properties.rootAlbumItems = {}
+	properties.albumList_ = deepcopy(albumList)
+	
+	if albumList ~= nil and #albumList > 0 then
+		if prefs.serverTable[properties.serverValue].version ~= '1' then
+			-- find root album id
+			local rootAlbumName = 999999999999 -- name (actually a number) of the parent gallery album
+			local rootAlbumId = -1 -- index in the array
+			
+			for i,album in pairs( albumList ) do
+				local currentParentName = tonumber( album.parent )
+				if currentParentName < rootAlbumName then
+					rootAlbumName = currentParentName
+					rootAlbumId = i
+				end
+			end
+			
+			if rootAlbumId ~= -1 then
+				-- attach children to the topmost album
+				attachChildren( properties.rootAlbumItems, albumList, rootAlbumId, "", 2 )
+			end
+		else
+			for i,album in pairs( albumList ) do
+				-- Find root album ids
+				if album.parent == "0" then
+					-- attach children to the topmost album
+					attachChildren( properties.rootAlbumItems, albumList, i, "", 2 )
+				end
+			end
+		end
+	end
+
+	if #properties.rootAlbumItems == 0 then
+		properties.albumsEnabled = false
+		properties.rootAlbumItems = nil
+		properties.albumItems = nil
+		properties.galleryAccountStatus = LOC "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/NotLoggedIn=Not logged in"
+	else
+		properties.albumsEnabled = true
+		-- ensure notification mechanism
+		properties.rootAlbumItems = properties.rootAlbumItems
+		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
+	end
+end
+
+local buildAlbumItems = function( properties, albumList )
+	log:trace("Calling buildAlbumItems( properties, albumList )")
+	-- reset the album items
+	properties.albumItems = {}
+	
+	if albumList ~= nil and #albumList > 0 then
+		if prefs.serverTable[properties.serverValue].version ~= '1' then
+			-- find root album id
+			local rootAlbumName = properties.rootAlbumValue -- name (actually a number) of the parent gallery album
+			local rootAlbumId = -1 -- index in the array
+			
+			for i, album in pairs( albumList ) do
+				if album.name == rootAlbumName then
+					rootAlbumId = i
+					break
+				end
+			end
+			
+			if rootAlbumId ~= -1 then
+				-- attach children to the topmost album
+				attachChildren( properties.albumItems, albumList, rootAlbumId, "", 100 )
+			end
+		else
+			for i,album in pairs( albumList ) do
+				-- Find root album ids
+				if album.parent == "0" then
+					-- attach children to the topmost album
+					attachChildren( properties.albumItems, albumList, i, "", 100 )
+				end
+			end
+		end
+	end
+	
+	if #properties.albumItems > 0 then
+		properties.albumsEnabled = true
+		-- ensure notification mechanism
+		properties.albumItems = properties.albumItems
+		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
+	end
+	
+end
+
+-- Attach children to the items list
+attachChildren = function( albumItems, albumList, id, indentation, degree )
+	if degree < 0 then
+		return
+	end
+	
+	log:trace("Calling attachChildren( albumItems, albumList, "..id..", "..indentation.." )")
+	local albumName = albumList[id].title
+	
+	-- clean special characters
+	albumName = string.gsub( albumName, '&amp;', "&" )
+	albumName = string.gsub( albumName, '\\n', " " )
+	albumName = string.gsub( albumName, '\\:', ":" )
+	albumName = string.gsub( albumName, '\\!', "!" )
+	albumName = string.gsub( albumName, '\\#', "#" )
+	albumName = string.gsub( albumName, "\\\\", "\\" )
+
+	table.insert( albumItems, { title = indentation..albumName,
+										   name = albumName,
+										   value = albumList[id].name } 
+	)
+
+	-- update the indentation level
+	indentation = indentation.."  |	 "
+	
+	-- attach subalbums
+	for i,v in ipairs( albumList[id].children ) do
+		log:debug("attaching child #"..v)
+		attachChildren( albumItems, albumList, tonumber(v), indentation, degree - 1 )
+	end
+end
+
 updateServerSelection = function( properties )
 	log:trace ("Calling updateServerSelection( properties )")
 	if properties.albumItems ~= nil and properties.albumItems ~= 0 then
@@ -38,6 +204,8 @@ updateServerSelection = function( properties )
 		properties.albumsEnabled = false
 		properties.albumItems = nil
 		properties.albumValue = nil
+		properties.subAlbumItems = nil
+		properties.subAlbumValue = nil
 		-- Disable the export button
 		properties.LR_canExport = false
 	end
@@ -52,13 +220,28 @@ updateServerSelectionStatus = function( properties )
 		properties.serverSelected = true
 		if properties.serverValue > 0 then
 			properties.serverSynopsis = properties.serverItems[properties.serverValue].title.." - "..properties.galleryAccountStatus
-		end	
+		end 
 	else
 		properties.serverSelected = false
 		properties.albumsEnabled = false
 		properties.albumItems = nil
+		properties.subAlbumItems = nil
 		properties.serverSynopsis = LOC "$$$/GalleryUpload/ExportDialog/ServerSynopsis/NoServer=No Gallery registered server"
-		updateAlbumSelectionStatus( properties )
+		updateRootAlbumSelectionStatus( properties )
+	end
+end
+
+updateRootAlbumSelectionStatus = function( properties )
+	log:trace ("Calling updateRootAlbumSelectionStatus( properties )")
+	
+	if properties.rootAlbumValue == nil or properties.rootAlbumValue == 0 then
+		-- disable the album creation
+		properties.albumSelected = false
+		-- disable export button
+		properties.LR_canExport = false
+		properties.albumSynopsis = nil
+	else
+		buildAlbumItems(properties, properties.albumList_)
 	end
 end
 
@@ -103,106 +286,6 @@ updateCaptionStatus = function( properties )
 	end
 end
 
-local buildServerItems = function( properties ) 
-	log:trace ("Calling buildServerItems( properties )")
-	local serverItems = {}
-	
-	if prefs == nil then
-		log:info("No preferences")
-	else
-		if prefs.serverTable ~= nil and #prefs.serverTable > 0 then
-			for i,v in ipairs( prefs.serverTable ) do 
-				table.insert( serverItems,
-					{ title = v.label, value = i }
-				)
-			end
-			properties.serverItems = serverItems
-			-- select the last used server
-			if prefs.serverValue ~= nil and #serverItems >= prefs.serverValue then
-				properties.serverValue = prefs.serverValue
-			end
-		else
-			properties.serverItems = serverItems
-			-- select no server
-			properties.serverValue = 0
-		end
-	end
-end
-
-local buildAlbumItems = function( properties, albumList )
-	log:trace("Calling buildAlbumItems( properties, albumList )")
-	-- reset the album items
-	properties.albumItems = {}
-
-	if albumList ~= nil and #albumList > 0 then
-		if prefs.serverTable[properties.serverValue].version ~= '1'	then
-			-- find root album id
-			local rootAlbumName = 999999999999 -- name (actually a number) of the parent gallery album
-			local rootAlbumId = -1 -- index in the array
-			
-			for i,album in pairs( albumList ) do
-				local currentParentName = tonumber( album.parent )
-				if currentParentName < rootAlbumName then
-					rootAlbumName = currentParentName
-					rootAlbumId = i
-				end
-			end
-			
-			if rootAlbumId ~= -1 then
-				-- attach children to the topmost album
-				attachChildren( properties, albumList, rootAlbumId, "" )
-			end
-		else
-			for i,album in pairs( albumList ) do
-				-- Find root album ids
-				if album.parent == "0" then
-					-- attach children to the topmost album
-					attachChildren( properties, albumList, i, "" )
-				end
-			end
-		end
-	end
-
-	if #properties.albumItems == 0 then
-		properties.albumsEnabled = false
-		properties.albumItems = nil
-		properties.galleryAccountStatus = LOC "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/NotLoggedIn=Not logged in"
-	else
-		properties.albumsEnabled = true
-		-- ensure notification mechanism
-		properties.albumItems = properties.albumItems
-		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
-	end
-end
-
--- Attach children to the items list
-attachChildren = function( properties, albumList, id, indentation )
-	log:trace("Calling attachChildren( properties, albumList, "..id..", "..indentation.." )")
-	local albumName = albumList[id].title
-	
-	-- clean special characters
-	albumName = string.gsub( albumName, '&amp;', "&" )
-	albumName = string.gsub( albumName, '\\n', " " )
-	albumName = string.gsub( albumName, '\\:', ":" )
-	albumName = string.gsub( albumName, '\\!', "!" )
-	albumName = string.gsub( albumName, '\\#', "#" )
-	albumName = string.gsub( albumName, "\\\\", "\\" )
-
-	table.insert( properties.albumItems, { title = indentation..albumName,
-	                                       name = albumName,
-	                                       value = albumList[id].name } 
-	)
-
-	-- update the indentation level
-	indentation = indentation.."  |  "
-	
-	-- attach subalbums
-	for i,v in ipairs( albumList[id].children ) do
-		log:debug("attaching child #"..v)
-		attachChildren( properties, albumList, tonumber(v), indentation )
-	end
-end 
-
 -------------------------------------------------------------------------------
 
 function GalleryUploadExportDialogSections.startDialog( properties )
@@ -213,19 +296,22 @@ function GalleryUploadExportDialogSections.startDialog( properties )
 	
 	-- clear the album list
 	properties.albumsEnabled = false
+	properties.rootAlbumItems = nil
 	properties.albumItems = nil
+	properties.albumList_ = nil
 
 	-- add observers
 	properties:addObserver( 'serverValue', updateServerSelectionStatus )
 	properties:addObserver( 'serverValue', updateServerSelection )
 	properties:addObserver( 'galleryAccountStatus', updateServerSelectionStatus )
+	properties:addObserver( 'rootAlbumValue', updateRootAlbumSelectionStatus )
 	properties:addObserver( 'albumValue', updateAlbumSelectionStatus )
 	properties:addObserver( 'caption', updateCaptionStatus )
 
 	-- initialize dialog elements
 	buildServerItems( properties )
-	buildAlbumItems( properties, {} )
-	updateAlbumSelectionStatus( properties )
+	buildRootAlbumItems( properties, {} )
+	updateRootAlbumSelectionStatus( properties )
 	updateCaptionStatus( properties )
 	
 	properties.galleryAccountStatus = LOC "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/NotLoggedIn=Not logged in"
@@ -290,24 +376,24 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 							
 							if status == '0' then
 								if #albumList > 0 then
-									buildAlbumItems(properties, albumList)
+									buildRootAlbumItems(properties, albumList)
 									properties.albumsEnabled = true
-									properties.albumValue = properties.albumItems[1].value
+									properties.rootAlbumValue = properties.rootAlbumItems[1].value
 								else
 									properties.galleryAccountStatus = LOC "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/NoAlbumFetched=No album fetched"
 									properties.albumsEnabled = false
-									properties.albumItems = nil
+									properties.rootAlbumItems = nil
 								end
 							else
 								properties.albumsEnabled = false
-								properties.albumItems = nil
+								properties.rootAlbumItemslbumItems = nil
 							end
 						end )
 					end
 				},
 			},
 			
-			f:row {	
+			f:row { 
 				f:spacer {
 					width = share 'labelWidth',
 				},
@@ -328,7 +414,7 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 						-- ensure notification mechanism
 						properties.serverItems = properties.serverItems
 						
-						buildAlbumItems( properties, {} )
+						buildRootAlbumItems( properties, {} )
 					end
 				},
 				
@@ -340,7 +426,7 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 						buildServerItems( properties )
 						updateServerSelectionStatus( properties )
 						
-						buildAlbumItems( properties, {} )
+						buildRootAlbumItems( properties, {} )
 					end
 				},
 				
@@ -370,11 +456,11 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 						-- ensure notification mechanism
 						properties.serverItems = properties.serverItems
 						
-						buildAlbumItems( properties, {} )
+						buildRootAlbumItems( properties, {} )
 					end
 				}
 			},
-			f:row {	
+			f:row { 
 				f:static_text {
 					title = LOC "$$$/GalleryUpload/ExportDialog/Status=Status:",
 					alignment = 'right',
@@ -404,6 +490,13 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 				f:popup_menu {
 					fill_horizontal = 1,
 					enabled = bind 'albumsEnabled',
+					items = bind 'rootAlbumItems',
+					value = bind 'rootAlbumValue',
+				},
+				
+				f:popup_menu {
+					fill_horizontal = 1,
+					enabled = bind 'albumsEnabled',
 					items = bind 'albumItems',
 					value = bind 'albumValue',
 				},
@@ -418,11 +511,7 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 							resultAlbumName, resultAlbumTitle, resultAlbumDesc = GalleryUploadDialogs.showAddAlbum(context)
 							
 							if resultAlbumName ~= 'cancelled' then
-								local status, actualAlbumName = GalleryRemoteProtocol.addAlbum( properties.serverValue,
-								                                                                properties.albumValue,
-								                                                                resultAlbumName, 
-								                                                                resultAlbumTitle,
-								                                                                resultAlbumDesc )
+								local status, actualAlbumName = GalleryRemoteProtocol.addAlbum( properties.serverValue, properties.albumValue, resultAlbumName, resultAlbumTitle, resultAlbumDesc )
 								
 								local albumList = {}
 								if status == '0' then
@@ -430,7 +519,7 @@ function GalleryUploadExportDialogSections.sectionsForTopOfDialog( f, properties
 								end
 								
 								if status == '0' and #albumList > 0 then
-									buildAlbumItems(properties, albumList)
+									buildRootAlbumItems(properties, albumList)
 									properties.albumsEnabled = true
 									properties.albumValue = actualAlbumName
 								else
