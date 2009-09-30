@@ -29,6 +29,7 @@ GalleryUploadExportDialogSections = {}
 
 -------------------------------------------------------------------------------
 
+-- a deep copy routine for copying tables
 local deepcopy = function (object)
     local lookup_table = {}
     local function _copy(object)
@@ -72,6 +73,49 @@ local buildServerItems = function( properties )
 		end
 	end
 end
+
+local buildAlbumItems = function( properties, albumList )
+	log:trace("Calling buildAlbumItems( properties, albumList )")
+	-- reset the album items
+	properties.albumItems = {}
+	
+	if albumList ~= nil and #albumList > 0 then
+		if prefs.serverTable[properties.serverValue].version ~= '1' then
+			-- find root album id
+			local rootAlbumName = properties.rootAlbumValue -- name (actually a number) of the parent gallery album
+			local rootAlbumId = -1 -- index in the array
+			
+			for i, album in pairs( albumList ) do
+				if album.name == rootAlbumName then
+					rootAlbumId = i
+					break
+				end
+			end
+			
+			if rootAlbumId ~= -1 then
+				-- attach children to the topmost album
+				attachChildren( properties.albumItems, albumList, rootAlbumId, "", 100 )
+			end
+		else
+			for i,album in pairs( albumList ) do
+				-- Find root album ids
+				if album.parent == "0" then
+					-- attach children to the topmost album
+					attachChildren( properties.albumItems, albumList, i, "", 100 )
+				end
+			end
+		end
+	end
+	
+	if #properties.albumItems > 0 then
+		properties.albumsEnabled = true
+		-- ensure notification mechanism
+		properties.albumItems = properties.albumItems
+		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
+	end
+	
+end
+
 
 local buildRootAlbumItems = function( properties, albumList )
 	log:trace("Calling buildRootAlbumItems( properties, albumList )")
@@ -118,49 +162,8 @@ local buildRootAlbumItems = function( properties, albumList )
 		-- ensure notification mechanism
 		properties.rootAlbumItems = properties.rootAlbumItems
 		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
+		buildAlbumItems(properties, albumList)
 	end
-end
-
-local buildAlbumItems = function( properties, albumList )
-	log:trace("Calling buildAlbumItems( properties, albumList )")
-	-- reset the album items
-	properties.albumItems = {}
-	
-	if albumList ~= nil and #albumList > 0 then
-		if prefs.serverTable[properties.serverValue].version ~= '1' then
-			-- find root album id
-			local rootAlbumName = properties.rootAlbumValue -- name (actually a number) of the parent gallery album
-			local rootAlbumId = -1 -- index in the array
-			
-			for i, album in pairs( albumList ) do
-				if album.name == rootAlbumName then
-					rootAlbumId = i
-					break
-				end
-			end
-			
-			if rootAlbumId ~= -1 then
-				-- attach children to the topmost album
-				attachChildren( properties.albumItems, albumList, rootAlbumId, "", 100 )
-			end
-		else
-			for i,album in pairs( albumList ) do
-				-- Find root album ids
-				if album.parent == "0" then
-					-- attach children to the topmost album
-					attachChildren( properties.albumItems, albumList, i, "", 100 )
-				end
-			end
-		end
-	end
-	
-	if #properties.albumItems > 0 then
-		properties.albumsEnabled = true
-		-- ensure notification mechanism
-		properties.albumItems = properties.albumItems
-		properties.galleryAccountStatus = LOC ( "$$$/GalleryUpload/ExportDialog/GalleryAccountStatus/LoggedIn=Connected" )
-	end
-	
 end
 
 -- Attach children to the items list
